@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>OmniMatch Terminal</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { 
+            background: #0f1115; color: #c8d0dc; 
+            font-family: 'SF Mono', 'Courier New', monospace; 
+            margin: 20px; font-size: 14px;
+        }
+        
+        /* Top Header Stats */
+        .top-bar {
+            display: flex; justify-content: space-between; 
+            background: #16191e; padding: 20px; 
+            border: 1px solid #2d3239; border-radius: 8px; margin-bottom: 20px;
+        }
+        .stat-box { display: flex; flex-direction: column; }
+        .stat-label { font-size: 11px; color: #848e9c; margin-bottom: 5px; text-transform: uppercase; }
+        .stat-value { font-size: 18px; font-weight: bold; }
+        .status-live { color: #26a69a; }
+        .status-offline { color: #ef5350; }
+
+        /* Chart Area */
+        .chart-container {
+            width: 100%; height: 180px; 
+            background: #16191e; border: 1px solid #2d3239; border-radius: 8px;
+            margin-bottom: 20px; padding: 10px;
+        }
+        canvas { width: 100%; height: 100%; }
+
+        /* Grid Layout */
+        .grid { display: grid; grid-template-columns: 1fr 350px; gap: 20px; }
+        .card { background: #16191e; padding: 20px; border: 1px solid #2d3239; border-radius: 8px; }
+        h3 { margin-top: 0; color: #ffffff; border-bottom: 1px solid #2d3239; padding-bottom: 10px; font-size: 16px; }
+        
+        /* Orderbook Format */
+        .book-row { display: flex; justify-content: space-between; padding: 4px 0; }
+        .ask-row { color: #ef5350; }
+        .bid-row { color: #26a69a; }
+        .spread-row { text-align: center; color: #848e9c; font-size: 12px; padding: 10px 0; border-top: 1px solid #2d3239; border-bottom: 1px solid #2d3239; margin: 5px 0; }
+
+        /* Tape Format */
+        .tape-header { display: grid; grid-template-columns: 1fr 1fr 1fr; font-size: 12px; color: #848e9c; border-bottom: 1px solid #2d3239; padding-bottom: 8px; margin-bottom: 8px; }
+        .tape-row { display: grid; grid-template-columns: 1fr 1fr 1fr; padding: 4px 0; border-bottom: 1px solid rgba(45,50,57,0.5); }
+        .buy-col { color: #26a69a; }
+        .sell-col { color: #ef5350; }
+        #tape { max-height: 400px; overflow-y: hidden; }
+    </style>
+</head>
+<body>
+
+    <div class="top-bar">
+        <div class="stat-box">
+            <span class="stat-label">Status</span>
+            <span class="stat-value status-offline" id="status">● OFFLINE</span>
+        </div>
+        <div class="stat-box">
+            <span class="stat-label">Mid Price</span>
+            <span class="stat-value" id="mid">---</span>
+        </div>
+        <div class="stat-box">
+            <span class="stat-label">Res Price (MM)</span>
+            <span class="stat-value" id="res">---</span>
+        </div>
+        <div class="stat-box">
+            <span class="stat-label">Inventory (MM)</span>
+            <span class="stat-value" id="inv">---</span>
+        </div>
+        <div class="stat-box">
+            <span class="stat-label">Volatility (σ)</span>
+            <span class="stat-value" id="sig">---</span>
+        </div>
+    </div>
+
+    <div class="chart-container">
+        <canvas id="priceChart"></canvas>
+    </div>
+
+    <div class="grid">
+        <div class="card">
+            <h3>Order Book</h3>
+            <div style="display:flex; justify-content:space-between; color:#848e9c; font-size:12px; margin-bottom:10px;">
+                <span>PRICE</span><span>QTY</span>
+            </div>
+            <div id="asks"></div>
+            <div id="spread" class="spread-row">SPREAD: -</div>
+            <div id="bids"></div>
+        </div>
+
+        <div class="card">
+            <h3>Time & Sales</h3>
+            <div class="tape-header">
+                <span>SIDE</span>
+                <span>PRICE</span>
+                <span>QTY</span>
+            </div>
+            <div id="tape"></div>
+        </div>
+    </div>
+
+    <script>
+        const es = new EventSource('http://localhost:9001/events');
+        const canvas = document.getElementById('priceChart');
+        const ctx = canvas.getContext('2d');
+        let prices = [];
+
+        es.onopen = () => {
+            const el = document.getElementById('status');
+            el.innerText = "● LIVE";
+            el.className = "stat-value status-live";
+        };
+
+        es.onmessage = (e) => {
+            const data = JSON.parse(e.data);
+            
+            // 1. Update Top Stats
+            document.getElementById('mid').innerText = data.mid;
+            document.getElementById('inv').innerText = (data.inv > 0 ? '+' : '') + data.inv;
+            document.getElementById('res').innerText = data.res || data.mid;
+            document.getElementById('sig').innerText = data.sig ? data.sig.toFixed(2) : "1.50";
+
+            // 2. Update Order Book (Asks Reverse, Spread, Bids)
+            const askHtml = [...data.asks].reverse().map(a => `<div class="book-row ask-row"><span>${a.p}</span><span>${a.q}</span></div>`).join('');
+            document.getElementById('asks').innerHTML = askHtml;
+
+            const bidHtml = data.bids.map(b => `<div class="book-row bid-row"><span>${b.p}</span><span>${b.q}</span></div>`).join('');
+            document.getElementById('bids').innerHTML = bidHtml;
+
+            // Calculate Spread
+            if(data.asks.length > 0 && data.bids.length > 0) {
+                const spread = data.asks[0].p - data.bids[0].p;
+                document.getElementById('spread').innerText = `SPREAD: ${spread}`;
+            }
+
+            // 3. Update Tape (Time & Sales)
+            if(data.trades) {
+                const tapeHtml = data.trades.map(t => {
+                    const colorClass = t.s === 'buy' ? 'buy-col' : 'sell-col';
+                    return `<div class="tape-row ${colorClass}">
+                                <span>${t.s.toUpperCase()}</span>
+                                <span>${t.p}</span>
+                                <span>${t.q}</span>
+                            </div>`;
+                }).join('');
+                document.getElementById('tape').innerHTML = tapeHtml;
+            }
+
+            // 4. Draw Canvas Chart
+            prices.push(data.mid);
+            if(prices.length > 150) prices.shift();
+
+            // Resize canvas to fix blurry lines
+            canvas.width = canvas.parentElement.clientWidth - 20; 
+            canvas.height = canvas.parentElement.clientHeight - 20;
+            
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            if (prices.length > 1) {
+                ctx.strokeStyle = '#26a69a';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                
+                let min = Math.min(...prices) * 0.995;
+                let max = Math.max(...prices) * 1.005;
+                let range = max - min;
+                
+                prices.forEach((p, i) => {
+                    let x = (i / (prices.length - 1)) * canvas.width;
+                    let y = canvas.height - ((p - min) / range) * canvas.height;
+                    if(i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+                });
+                ctx.stroke();
+
+                // Fill gradient under the line
+                ctx.lineTo(canvas.width, canvas.height);
+                ctx.lineTo(0, canvas.height);
+                let grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+                grad.addColorStop(0, 'rgba(38, 166, 154, 0.2)');
+                grad.addColorStop(1, 'rgba(38, 166, 154, 0)');
+                ctx.fillStyle = grad;
+                ctx.fill();
+            }
+        };
+
+        es.onerror = () => {
+            const el = document.getElementById('status');
+            el.innerText = "● OFFLINE";
+            el.className = "stat-value status-offline";
+        };
+    </script>
+</body>
+</html>
