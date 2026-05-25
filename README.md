@@ -1,4 +1,4 @@
-# OmniMatch — Real-Time Limit Order Book & Market-Making Simulator
+# OmniMatch - Real-Time Limit Order Book & Market-Making Simulator
 
 A multi-threaded limit order book matching engine written in C++, paired with an
 Avellaneda–Stoikov market maker, synthetic noise traders, and a live browser
